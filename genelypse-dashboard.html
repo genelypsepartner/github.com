@@ -8304,11 +8304,14 @@ function downloadIcs(filename, content) {
 // Un acta se registra por día/empresa. Todo lo tipificado dentro (tareas, visitas,
 // conexiones, reuniones) se propaga automáticamente al portafolio principal de esa
 // empresa (client.tasks / client.visits / client.conexiones / client.meetings).
-function TrazabilidadTab({ data, onChange }) {
+function TrazabilidadTab({ data, onChange, currentUserId }) {
   const clients = data.clients || [];
   const team = data.team || [];
   const actas = (data.trazabilidad && data.trazabilidad.actas) || [];
   const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [historialAbierto, setHistorialAbierto] = useState(null);
 
   const blankForm = () => ({
     fecha: nowBogota().toISOString().slice(0,10),
@@ -8372,6 +8375,9 @@ function TrazabilidadTab({ data, onChange }) {
       problematicas: form.problematicas.trim(), howknow: form.howknow.trim(), soluciones: form.soluciones.trim(), acuerdos: form.acuerdos.trim(),
       tareaIds: newTasks.map(t=>t.id), visitaIds: newVisits.map(v=>v.id), conexionIds: newConexiones.map(c=>c.id), reunionIds: newMeetings.map(m=>m.id),
       createdAt: Date.now(),
+      creadoPorId: currentUserId || null,
+      modificadoPorId: null, modificadoAt: null,
+      historial: [],
     };
 
     onChange({
@@ -8381,6 +8387,31 @@ function TrazabilidadTab({ data, onChange }) {
     });
     setForm(blankForm());
     setShowForm(false);
+  };
+
+  // ── editar acta (registra quién y cuándo la modifica) ──
+  const startEdit = (acta) => {
+    setEditingId(acta.id);
+    setEditForm({
+      fecha: acta.fecha, empresaId: acta.empresaId, responsableId: acta.responsableId,
+      problematicas: acta.problematicas||"", howknow: acta.howknow||"", soluciones: acta.soluciones||"", acuerdos: acta.acuerdos||"",
+    });
+  };
+  const cancelEdit = () => { setEditingId(null); setEditForm(null); };
+  const saveEdit = () => {
+    if (!editForm || !editForm.fecha || !editForm.empresaId || !editForm.responsableId) return;
+    const now = Date.now();
+    const updatedActas = actas.map(a => a.id !== editingId ? a : {
+      ...a,
+      fecha: editForm.fecha, empresaId: editForm.empresaId, responsableId: editForm.responsableId,
+      problematicas: editForm.problematicas.trim(), howknow: editForm.howknow.trim(),
+      soluciones: editForm.soluciones.trim(), acuerdos: editForm.acuerdos.trim(),
+      modificadoPorId: currentUserId || null,
+      modificadoAt: now,
+      historial: [...(a.historial||[]), { userId: currentUserId||null, at: now }],
+    });
+    onChange({ ...data, trazabilidad: { ...(data.trazabilidad||{}), actas: updatedActas } });
+    cancelEdit();
   };
 
   const sortedActas = [...actas].sort((a,b)=>b.fecha.localeCompare(a.fecha) || b.createdAt-a.createdAt);
@@ -8535,7 +8566,10 @@ function TrazabilidadTab({ data, onChange }) {
           {sortedActas.map(a => {
             const c = clients.find(x=>x.id===a.empresaId);
             const r = team.find(m=>m.id===a.responsableId);
+            const creador = team.find(m=>m.id===a.creadoPorId);
+            const editor = team.find(m=>m.id===a.modificadoPorId);
             const total = (a.tareaIds?.length||0)+(a.visitaIds?.length||0)+(a.conexionIds?.length||0)+(a.reunionIds?.length||0);
+            const isEditing = editingId === a.id;
             return (
               <div key={a.id} style={{ background:CARD, border:`1px solid ${BORDER}`, borderRadius:12, padding:"14px 16px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:8 }}>
@@ -8545,11 +8579,95 @@ function TrazabilidadTab({ data, onChange }) {
                   <span style={{ color:WHITE, fontWeight:700, fontSize:13 }}>🏢 {c?c.name:"Empresa eliminada"}</span>
                   <span style={{ color:GRAY, fontSize:12 }}>👤 {r?r.name:"—"}</span>
                   {total > 0 && <span style={{ fontSize:10.5, color:GREEN, background:"rgba(76,175,125,0.1)", padding:"2px 8px", borderRadius:10 }}>{total} ítem(s) propagados</span>}
+                  <div style={{ flex:1 }} />
+                  {!isEditing && (
+                    <button onClick={()=>startEdit(a)}
+                      style={{ padding:"3px 10px", background:"transparent", border:`1px solid ${BORDER}`, borderRadius:6, color:GOLD, cursor:"pointer", fontSize:11 }}>
+                      ✏️ Editar
+                    </button>
+                  )}
                 </div>
-                {a.problematicas && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Problemáticas:</b> {a.problematicas}</div>}
-                {a.howknow && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Know-how:</b> {a.howknow}</div>}
-                {a.soluciones && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Soluciones:</b> {a.soluciones}</div>}
-                {a.acuerdos && <div style={{ fontSize:12, color:GRAY }}><b style={{color:WHITE}}>Acuerdos:</b> {a.acuerdos}</div>}
+
+                <div style={{ display:"flex", gap:12, flexWrap:"wrap", marginBottom:8, fontSize:10.5, color:GRAY }}>
+                  <span>Creada por: <b style={{color:WHITE}}>{creador ? creador.name : "—"}</b></span>
+                  {a.modificadoAt && (
+                    <span>
+                      · Última edición: <b style={{color:WHITE}}>{editor ? editor.name : "—"}</b> el {new Date(a.modificadoAt).toLocaleString("es-CO",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}
+                      {(a.historial||[]).length > 0 && (
+                        <button onClick={()=>setHistorialAbierto(historialAbierto===a.id?null:a.id)}
+                          style={{ marginLeft:8, background:"none", border:"none", color:GOLD, cursor:"pointer", fontSize:10.5, textDecoration:"underline" }}>
+                          {historialAbierto===a.id ? "ocultar historial" : `ver historial (${a.historial.length})`}
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </div>
+
+                {historialAbierto === a.id && (a.historial||[]).length > 0 && (
+                  <div style={{ background:"#111113", border:`1px solid ${BORDER}`, borderRadius:8, padding:"8px 10px", marginBottom:10, fontSize:11, color:GRAY }}>
+                    {[...a.historial].sort((x,y)=>y.at-x.at).map((h,i)=>{
+                      const u = team.find(m=>m.id===h.userId);
+                      return <div key={i}>✏️ {u?u.name:"Usuario eliminado"} — {new Date(h.at).toLocaleString("es-CO",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"})}</div>;
+                    })}
+                  </div>
+                )}
+
+                {isEditing ? (
+                  <div style={{ display:"flex", flexDirection:"column", gap:10, background:"#111113", border:`1px solid ${BORDER}`, borderRadius:8, padding:12 }}>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10 }}>
+                      <div>
+                        <label style={labelStyle}>Fecha *</label>
+                        <input type="date" value={editForm.fecha} onChange={e=>setEditForm(f=>({...f,fecha:e.target.value}))} style={{...inputStyle, colorScheme:"dark"}} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>Empresa *</label>
+                        <select value={editForm.empresaId} onChange={e=>setEditForm(f=>({...f,empresaId:e.target.value}))} style={inputStyle}>
+                          <option value="">— Seleccionar —</option>
+                          {clients.map(cl=><option key={cl.id} value={cl.id}>{cl.name}</option>)}
+                        </select>
+                      </div>
+                      <div>
+                        <label style={labelStyle}>Responsable del acta *</label>
+                        <select value={editForm.responsableId} onChange={e=>setEditForm(f=>({...f,responsableId:e.target.value}))} style={inputStyle}>
+                          <option value="">— Seleccionar —</option>
+                          {team.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                      <div>
+                        <label style={labelStyle}>Problemáticas</label>
+                        <textarea value={editForm.problematicas} onChange={e=>setEditForm(f=>({...f,problematicas:e.target.value}))} rows={2} style={{...inputStyle,resize:"vertical"}} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>Know-how</label>
+                        <textarea value={editForm.howknow} onChange={e=>setEditForm(f=>({...f,howknow:e.target.value}))} rows={2} style={{...inputStyle,resize:"vertical"}} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>Soluciones</label>
+                        <textarea value={editForm.soluciones} onChange={e=>setEditForm(f=>({...f,soluciones:e.target.value}))} rows={2} style={{...inputStyle,resize:"vertical"}} />
+                      </div>
+                      <div>
+                        <label style={labelStyle}>Acuerdos</label>
+                        <textarea value={editForm.acuerdos} onChange={e=>setEditForm(f=>({...f,acuerdos:e.target.value}))} rows={2} style={{...inputStyle,resize:"vertical"}} />
+                      </div>
+                    </div>
+                    <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                      <button onClick={cancelEdit} style={{ padding:"7px 14px", background:"transparent", border:`1px solid ${BORDER}`, borderRadius:8, color:GRAY, cursor:"pointer", fontSize:12 }}>Cancelar</button>
+                      <button onClick={saveEdit} disabled={!editForm.fecha||!editForm.empresaId||!editForm.responsableId}
+                        style={{ padding:"7px 16px", background:GOLD, color:"#141414", border:"none", borderRadius:8, cursor:"pointer", fontWeight:700, fontSize:12 }}>
+                        💾 Guardar cambios
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {a.problematicas && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Problemáticas:</b> {a.problematicas}</div>}
+                    {a.howknow && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Know-how:</b> {a.howknow}</div>}
+                    {a.soluciones && <div style={{ fontSize:12, color:GRAY, marginBottom:3 }}><b style={{color:WHITE}}>Soluciones:</b> {a.soluciones}</div>}
+                    {a.acuerdos && <div style={{ fontSize:12, color:GRAY }}><b style={{color:WHITE}}>Acuerdos:</b> {a.acuerdos}</div>}
+                  </>
+                )}
               </div>
             );
           })}
@@ -8876,6 +8994,182 @@ function BitacoraGlobalTab({ data }) {
 }
 
 // ─── REPORTES AUTOMÁTICOS ───────────────────────────────────────────────────────
+// ─── TAREAS (vista global, todas las empresas) ─────────────────────────────────
+const ISSUE_PRIORIDAD_A_TAREA = { rojo:"alta", amarillo:"media", verde:"baja" };
+const ISSUE_ESTADO_A_TAREA = { pendiente:"pendiente", "en-progreso":"en_progreso", listo:"listo" };
+
+function TareasGlobalTab({ data }) {
+  const clients = data.clients || [];
+  const team = data.team || [];
+  const [userFilter, setUserFilter] = useState("Todos");
+  const [prioridadFilter, setPrioridadFilter] = useState("Todas");
+  const [empresaFilter, setEmpresaFilter] = useState("Todas");
+  const [estadoFilter, setEstadoFilter] = useState("Todos");
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+
+  // tareas de cada empresa (portafolio / método)
+  const tareasEmpresa = clients.flatMap(c => (c.tasks||[]).map(t => ({
+    id: t.id,
+    origen: "empresa",
+    title: t.title,
+    empresaId: c.id,
+    empresaNombre: c.name,
+    assigneeIds: t.assigneeIds || (t.assigneeId ? [t.assigneeId] : []),
+    prioridad: t.prioridad || "media",
+    estado: t.estado || (t.done ? "listo" : "pendiente"),
+    fechaLimite: t.fechaLimite || null,
+    urgent: t.urgent,
+  })));
+
+  // tareas del Tablero de Tareas (data.issues) — internas/administrativas
+  const tareasTablero = (data.issues||[]).map(i => {
+    const empresa = i.empresaId ? clients.find(c=>c.id===i.empresaId) : null;
+    return {
+      id: i.id,
+      origen: "tablero",
+      title: i.title,
+      empresaId: i.empresaId || null,
+      empresaNombre: empresa ? empresa.name : (i.type==="externa" ? "Externa (sin empresa)" : "Interna / Tablero"),
+      assigneeIds: i.assigneeIds || (i.assigneeId ? [i.assigneeId] : []),
+      prioridad: ISSUE_PRIORIDAD_A_TAREA[i.priority] || "media",
+      estado: ISSUE_ESTADO_A_TAREA[i.status] || "pendiente",
+      fechaLimite: i.dueDate || null,
+      urgent: i.priority === "rojo",
+    };
+  });
+
+  const allTasks = [...tareasEmpresa, ...tareasTablero];
+
+  const filtered = allTasks.filter(t => {
+    if (userFilter !== "Todos" && !t.assigneeIds.includes(userFilter)) return false;
+    if (prioridadFilter !== "Todas" && (t.prioridad||"media") !== prioridadFilter) return false;
+    if (empresaFilter !== "Todas" && t.empresaId !== empresaFilter) return false;
+    if (estadoFilter !== "Todos" && (t.estado || (t.done?"listo":"pendiente")) !== estadoFilter) return false;
+    if (fechaDesde && (!t.fechaLimite || t.fechaLimite < fechaDesde)) return false;
+    if (fechaHasta && (!t.fechaLimite || t.fechaLimite > fechaHasta)) return false;
+    return true;
+  });
+
+  const sorted = [...filtered].sort((a,b) => {
+    if (!a.fechaLimite && !b.fechaLimite) return 0;
+    if (!a.fechaLimite) return 1;
+    if (!b.fechaLimite) return -1;
+    return a.fechaLimite.localeCompare(b.fechaLimite);
+  });
+
+  const limpiarFiltros = () => {
+    setUserFilter("Todos"); setPrioridadFilter("Todas"); setEmpresaFilter("Todas");
+    setEstadoFilter("Todos"); setFechaDesde(""); setFechaHasta("");
+  };
+  const hayFiltrosActivos = userFilter!=="Todos" || prioridadFilter!=="Todas" || empresaFilter!=="Todas" || estadoFilter!=="Todos" || fechaDesde || fechaHasta;
+
+  const selectStyle = { background:"#111113", border:`1px solid ${BORDER}`, borderRadius:8, padding:"7px 10px", color:WHITE, fontSize:12, outline:"none" };
+  const th = { textAlign:"left", color:GRAY, fontSize:10.5, textTransform:"uppercase", letterSpacing:0.5, padding:"7px 10px", borderBottom:`1px solid ${BORDER}` };
+  const td = { padding:"8px 10px", fontSize:12.5, color:WHITE, borderBottom:`1px solid ${BORDER}55`, verticalAlign:"top" };
+
+  return (
+    <div style={{ maxWidth:1150 }}>
+      <div style={{ marginBottom:18 }}>
+        <div style={{ color:GOLD_DIM, fontSize:10, fontWeight:700, letterSpacing:3, textTransform:"uppercase", marginBottom:6 }}>Vista consolidada</div>
+        <h2 style={{ color:WHITE, fontSize:22, fontWeight:800, margin:0, letterSpacing:-0.3 }}>Tareas</h2>
+        <div style={{ color:GRAY, fontSize:12, marginTop:5 }}>Todas las tareas de todas las empresas, con sus responsables. El filtro principal es por usuario; los demás son adicionales y se combinan con él.</div>
+      </div>
+
+      <div style={{ marginBottom:12, background:CARD, border:`1px solid ${GOLD}55`, borderRadius:12, padding:14, display:"flex", alignItems:"flex-end", gap:12, flexWrap:"wrap" }}>
+        <div style={{ minWidth:220 }}>
+          <label style={{ display:"block", color:GOLD, fontSize:11, fontWeight:700, marginBottom:5, textTransform:"uppercase", letterSpacing:0.5 }}>★ Usuario (filtro principal)</label>
+          <select value={userFilter} onChange={e=>setUserFilter(e.target.value)} style={{...selectStyle, border:`1px solid ${GOLD}`, minWidth:220, fontWeight:600}}>
+            <option value="Todos">Todos los usuarios</option>
+            {team.map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+        {hayFiltrosActivos && (
+          <button onClick={limpiarFiltros}
+            style={{ padding:"7px 12px", background:"transparent", border:`1px solid ${BORDER}`, borderRadius:8, color:GRAY, cursor:"pointer", fontSize:12 }}>
+            ✕ Limpiar filtros
+          </button>
+        )}
+      </div>
+
+      <div style={{ marginBottom:16, background:CARD, border:`1px solid ${BORDER}`, borderRadius:12, padding:14 }}>
+        <div style={{ color:GRAY, fontSize:10, fontWeight:700, letterSpacing:1, textTransform:"uppercase", marginBottom:10 }}>Filtros adicionales (opcionales)</div>
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-end" }}>
+          <div>
+            <label style={{ display:"block", color:GRAY, fontSize:10.5, marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>Prioridad</label>
+            <select value={prioridadFilter} onChange={e=>setPrioridadFilter(e.target.value)} style={selectStyle}>
+              <option value="Todas">Todas</option>
+              {PRIORIDADES.map(p=><option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display:"block", color:GRAY, fontSize:10.5, marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>Empresa</label>
+            <select value={empresaFilter} onChange={e=>setEmpresaFilter(e.target.value)} style={selectStyle}>
+              <option value="Todas">Todas</option>
+              {clients.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display:"block", color:GRAY, fontSize:10.5, marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>Estado</label>
+            <select value={estadoFilter} onChange={e=>setEstadoFilter(e.target.value)} style={selectStyle}>
+              <option value="Todos">Todos</option>
+              {ESTADOS_TAREA.map(es=><option key={es.id} value={es.id}>{es.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={{ display:"block", color:GRAY, fontSize:10.5, marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>Fecha límite desde</label>
+            <input type="date" value={fechaDesde} onChange={e=>setFechaDesde(e.target.value)} style={{...selectStyle, colorScheme:"dark"}} />
+          </div>
+          <div>
+            <label style={{ display:"block", color:GRAY, fontSize:10.5, marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>hasta</label>
+            <input type="date" value={fechaHasta} onChange={e=>setFechaHasta(e.target.value)} style={{...selectStyle, colorScheme:"dark"}} />
+          </div>
+        </div>
+      </div>
+
+      <div style={{ color:GRAY, fontSize:11.5, marginBottom:8 }}>{sorted.length} de {allTasks.length} tarea(s)</div>
+
+      {sorted.length === 0 ? (
+        <div style={{ textAlign:"center", padding:"50px 0", color:GRAY, fontSize:13 }}>No hay tareas que coincidan con estos filtros.</div>
+      ) : (
+        <div style={{ overflowX:"auto" }}>
+          <table style={{ width:"100%", borderCollapse:"collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>Tarea</th>
+                <th style={th}>Origen</th>
+                <th style={th}>Empresa</th>
+                <th style={th}>Responsable(s)</th>
+                <th style={th}>Prioridad</th>
+                <th style={th}>Estado</th>
+                <th style={th}>Fecha límite</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(t => {
+                const nombres = t.assigneeIds.map(id=>team.find(m=>m.id===id)?.name).filter(Boolean);
+                const pr = PRIORIDADES.find(p=>p.id===(t.prioridad||"media")) || PRIORIDADES[1];
+                const es = ESTADOS_TAREA.find(s=>s.id===(t.estado||(t.done?"listo":"pendiente"))) || ESTADOS_TAREA[0];
+                return (
+                  <tr key={t.origen+"-"+t.id}>
+                    <td style={td}>{t.title}{t.urgent && <span style={{marginLeft:6,fontSize:10.5,color:"#E06C6C"}}>🔥 urgente</span>}</td>
+                    <td style={td}><span style={{ fontSize:10.5, color:GRAY, background:"#111113", border:`1px solid ${BORDER}`, padding:"2px 7px", borderRadius:8 }}>{t.origen==="tablero"?"Tablero":"Empresa"}</span></td>
+                    <td style={td}>{t.empresaNombre}</td>
+                    <td style={td}>{nombres.length ? nombres.join(", ") : <span style={{color:GRAY}}>Sin asignar</span>}</td>
+                    <td style={td}><span style={{ color:pr.color, background:`${pr.color}18`, padding:"2px 8px", borderRadius:10, fontSize:11 }}>{pr.label}</span></td>
+                    <td style={td}><span style={{ color:es.color, background:`${es.color}18`, padding:"2px 8px", borderRadius:10, fontSize:11 }}>{es.label}</span></td>
+                    <td style={td}>{t.fechaLimite ? new Date(t.fechaLimite+"T00:00").toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"}) : <span style={{color:GRAY}}>—</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ReportesTab({ data }) {
   const clients = data.clients || [];
   const team = data.team || [];
@@ -9324,7 +9618,7 @@ function MetodoGrowthPartner() {
           <div style={{ width:1, height:22, background:"rgba(42,42,46,0.8)", marginRight:4 }} />
           {/* Main nav */}
           <div style={{ display:"flex", gap:0 }}>
-            {[["inicio","Inicio"],["clientes","Empresas"],["metodo","Método"],["calendario","Calendario"],["trazabilidad","Trazabilidad"],["plantillas","Plantillas"],["pizarra","Pizarra"],["bitacora","Bitácora"],["reportes","Reportes"]].map(([id,label]) => (
+            {[["inicio","Inicio"],["clientes","Empresas"],["metodo","Método"],["calendario","Calendario"],["trazabilidad","Trazabilidad"],["tareas","Tareas"],["plantillas","Plantillas"],["pizarra","Pizarra"],["bitacora","Bitácora"],["reportes","Reportes"]].map(([id,label]) => (
               <button key={id}
                 className={`gp-nav-tab${tab===id&&!selectedClientId?" active":""}`}
                 onClick={()=>{ setTab(id); setSelectedClientId(null); }}>
@@ -9398,7 +9692,10 @@ function MetodoGrowthPartner() {
               <CalendarioTab clients={data.clients} team={data.team||[]} />
             )}
             {tab === "trazabilidad" && (
-              <TrazabilidadTab data={data} onChange={updateData} />
+              <TrazabilidadTab data={data} onChange={updateData} currentUserId={currentUserId} />
+            )}
+            {tab === "tareas" && (
+              <TareasGlobalTab data={data} />
             )}
             {tab === "plantillas" && (
               <EnlacesPlantillaTab data={data} onChange={updateData} />
