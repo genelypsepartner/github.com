@@ -210,6 +210,9 @@ const SUPABASE_KEY = "sb_publishable__-7bIIa93mx6hL5EGWGSxg_ERlvaaQ1";
 const APP_URL = location.origin + location.pathname;
 const TZ = "America/Bogota";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  db: {
+    schema: "respaldo_2026_10_29"
+  },
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -457,7 +460,7 @@ function useStore(session) {
     Object.keys(TABLAS).forEach(tabla => {
       canal.on("postgres_changes", {
         event: "*",
-        schema: "public",
+        schema: "respaldo_2026_10_29",
         table: tabla
       }, () => {
         clearTimeout(timers.current[tabla]);
