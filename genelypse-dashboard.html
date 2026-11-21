@@ -188,6 +188,18 @@ select.mmini{padding:5px 8px}
 @media(max-width:900px){.creacion-grid{grid-template-columns:1fr}}
 .apil{display:flex;height:12px;border-radius:99px;overflow:hidden;margin-top:3px}.apil span{display:block}
 i.lg{display:inline-block;width:10px;height:10px;border-radius:3px;margin-left:8px}
+.cat-cab{border-bottom:1px solid var(--bd);padding-bottom:6px;margin-bottom:8px}
+
+/* Mi día */
+.md-cols{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start}.md-izq{flex:999 1 560px;min-width:0}.md-der{flex:1 1 280px;min-width:0}
+.md-mom{font-size:12px;font-weight:700;color:var(--pu3);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+.md-rut,.md-ag,.md-tar{padding:10px 0;border-bottom:1px solid var(--bd)}.md-rut:last-child,.md-ag:last-child,.md-tar:last-child{border-bottom:0}
+.md-check{width:20px!important;height:20px;min-height:0;accent-color:var(--pu);margin-top:2px;flex:none}
+.md-link{background:none;border:0;padding:4px 0;color:var(--pu3);font-weight:600;font-size:13px;text-decoration:underline;cursor:pointer;min-height:32px;white-space:nowrap}
+.md-know{background:var(--card2);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-top:8px}
+.md-motivo{display:flex;flex-wrap:wrap;gap:10px;background:rgba(242,184,75,.08);border:1px solid rgba(242,184,75,.35);border-radius:10px;padding:10px;margin-top:8px}
+.btn.md-si{background:#4CAF7D;border-color:#4CAF7D;color:#06240f}.btn.md-no{background:#E06C6C;border-color:#E06C6C;color:#2a0707}
+.md-reporte h4{margin:6px 0 4px}
 </style></head><body><div id="root"></div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js" crossorigin></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js" crossorigin></script>
@@ -211,7 +223,7 @@ const APP_URL = location.origin + location.pathname;
 const TZ = "America/Bogota";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
   db: {
-    schema: "respaldo_2026_10_29"
+    schema: "genelypse"
   },
   auth: {
     persistSession: true,
@@ -241,9 +253,17 @@ const ESTADOS = [{
   label: "En progreso",
   color: "#5B9BF5"
 }, {
+  id: "espera",
+  label: "En espera",
+  color: "#F2B84B"
+}, {
   id: "listo",
   label: "Completada",
   color: "#4CAF7D"
+}, {
+  id: "no_se_hace",
+  label: "No se hace",
+  color: "#6B6A66"
 }];
 const TIPOS = [{
   id: "tarea",
@@ -326,7 +346,7 @@ function localInputToTs(v) {
   return new Date(v + ":00-05:00").toISOString();
 }
 function esVencida(t, hoy) {
-  return t.estado !== "listo" && t.fecha_limite && t.fecha_limite < hoy;
+  return t.estado !== "listo" && t.estado !== "no_se_hace" && t.fecha_limite && t.fecha_limite < hoy;
 }
 function progresoDe(lista) {
   const total = lista.length;
@@ -388,7 +408,18 @@ const TABLAS = {
   },
   actividad: {
     order: ["ocurrio_en", false],
-    limit: 600
+    limit: 1500
+  },
+  rutinas: {
+    order: ["orden", true]
+  },
+  rutina_marcas: {
+    order: ["fecha", false],
+    limit: 5000
+  },
+  jornadas_dia: {
+    order: ["fecha", false],
+    limit: 800
   }
 };
 function useToasts() {
@@ -414,7 +445,10 @@ function useStore(session) {
     plantillas: [],
     actividad: [],
     metodologia: [],
-    lienzos: []
+    lienzos: [],
+    rutinas: [],
+    rutina_marcas: [],
+    jornadas_dia: []
   });
   const [cargado, setCargado] = useState(false);
   const [vivo, setVivo] = useState(false);
@@ -460,7 +494,7 @@ function useStore(session) {
     Object.keys(TABLAS).forEach(tabla => {
       canal.on("postgres_changes", {
         event: "*",
-        schema: "respaldo_2026_10_29",
+        schema: "genelypse",
         table: tabla
       }, () => {
         clearTimeout(timers.current[tabla]);
@@ -2570,6 +2604,7 @@ function leerVistos() {
     return {};
   }
 }
+const esMarca = p => String(p.url || "").startsWith("cat://");
 function Plantillas() {
   const {
     data,
@@ -2578,7 +2613,10 @@ function Plantillas() {
     avisar
   } = useApp();
   const [q, setQ] = useState("");
+  const [filtro, setFiltro] = useState("");
   const [ed, setEd] = useState(null);
+  const [catModal, setCatModal] = useState(null);
+  const [cerradas, setCerradas] = useState({});
   const [vistos, setVistos] = useState(leerVistos);
   const marcar = id => {
     const n = {
@@ -2590,19 +2628,28 @@ function Plantillas() {
       localStorage.setItem("gp_vistos", JSON.stringify(n));
     } catch (e) {}
   };
-  const cats = [...new Set(data.plantillas.map(p => p.categoria))];
-  const lista = data.plantillas.filter(p => (p.titulo + " " + p.categoria).toLowerCase().includes(q.toLowerCase()));
-  async function guardar(fila) {
+  const enlaces = data.plantillas.filter(p => !esMarca(p));
+  const cats = useMemo(() => {
+    const orden = {};
+    data.plantillas.forEach(p => {
+      const o = esMarca(p) ? 1e6 + p.orden : p.orden;
+      if (orden[p.categoria] == null || o < orden[p.categoria]) orden[p.categoria] = o;
+    });
+    return Object.keys(orden).sort((a, b) => orden[a] - orden[b]);
+  }, [data.plantillas]);
+  const nq = q.trim().toLowerCase();
+  const visibles = enlaces.filter(p => (!filtro || p.categoria === filtro) && (!nq || (p.titulo + " " + p.categoria).toLowerCase().includes(nq)));
+  async function guardarEnlace(fila) {
     const r = ed.id ? await sb.from("plantillas").update(fila).eq("id", ed.id) : await sb.from("plantillas").insert({
       ...fila,
-      orden: data.plantillas.length + 1
+      orden: Math.max(0, ...data.plantillas.map(x => x.orden)) + 1
     });
     if (r.error) return avisar(/duplicate/i.test(r.error.message) ? "Ese enlace ya está en la lista." : r.error.message, "error");
     await recargar("plantillas");
     setEd(null);
     avisar("Guardado ✓");
   }
-  async function borrar(p) {
+  async function borrarEnlace(p) {
     if (!window.confirm("¿Quitar «" + p.titulo + "»?")) return;
     const {
       error
@@ -2610,56 +2657,209 @@ function Plantillas() {
     if (error) return avisar(error.message, "error");
     recargar("plantillas");
   }
-  const grupos = [...new Set(lista.map(p => p.categoria))];
+  async function guardarCategoria(nombre) {
+    nombre = nombre.trim();
+    if (!nombre) return;
+    const viejo = catModal && catModal.nombre;
+    if (cats.some(c => c.toLowerCase() === nombre.toLowerCase() && c !== viejo)) return avisar("Ya existe una categoría con ese nombre.", "error");
+    if (viejo) {
+      const filas = data.plantillas.filter(p => p.categoria === viejo);
+      for (const f of filas) {
+        const {
+          error
+        } = await sb.from("plantillas").update(esMarca(f) ? {
+          categoria: nombre,
+          url: "cat://" + nombre.toLowerCase()
+        } : {
+          categoria: nombre
+        }).eq("id", f.id);
+        if (error) return avisar(error.message, "error");
+      }
+      if (filtro === viejo) setFiltro(nombre);
+    } else {
+      const {
+        error
+      } = await sb.from("plantillas").insert({
+        categoria: nombre,
+        titulo: "(categoría)",
+        url: "cat://" + nombre.toLowerCase(),
+        tipo: "enlace",
+        orden: Math.max(0, ...data.plantillas.map(x => x.orden)) + 1
+      });
+      if (error) return avisar(error.message, "error");
+    }
+    await recargar("plantillas");
+    setCatModal(null);
+    avisar(viejo ? "Categoría renombrada ✓" : "Categoría creada ✓");
+  }
+  async function borrarCategoria(c) {
+    const n = enlaces.filter(p => p.categoria === c).length;
+    if (!window.confirm(n ? "¿Eliminar la categoría «" + c + "» y sus " + n + " enlace(s)?" : "¿Eliminar la categoría «" + c + "»?")) return;
+    const {
+      error
+    } = await sb.from("plantillas").delete().eq("categoria", c);
+    if (error) return avisar(error.message, "error");
+    if (filtro === c) setFiltro("");
+    recargar("plantillas");
+    avisar("Categoría eliminada");
+  }
+  const grupos = cats.filter(c => !filtro || c === filtro).filter(c => !nq || visibles.some(p => p.categoria === c));
   return React.createElement("div", null, React.createElement("div", {
     className: "pag-cab"
-  }, React.createElement("div", null, React.createElement("h1", null, "Plantillas"), React.createElement("p", null, "Videos, gu\xEDas y enlaces de apoyo para el equipo.")), React.createElement("button", {
+  }, React.createElement("div", null, React.createElement("h1", null, "Plantillas"), React.createElement("p", null, "Videos, gu\xEDas y enlaces de apoyo, separados por categor\xEDa.")), React.createElement("div", {
+    className: "fila"
+  }, React.createElement("button", {
+    className: "btn",
+    onClick: () => setCatModal({})
+  }, "\uD83D\uDCC1 Nueva categor\xEDa"), React.createElement("button", {
     className: "btn primario",
-    onClick: () => setEd({})
-  }, "\uFF0B Agregar enlace")), React.createElement("input", {
+    onClick: () => setEd({
+      categoria: filtro
+    })
+  }, "\uFF0B Agregar enlace"))), React.createElement("input", {
     style: {
       maxWidth: 360,
-      marginBottom: 14
+      marginBottom: 10
     },
     placeholder: "\uD83D\uDD0E Buscar\u2026",
     value: q,
     onChange: e => setQ(e.target.value)
-  }), grupos.length === 0 && React.createElement(Vacio, {
+  }), React.createElement("div", {
+    className: "fila",
+    style: {
+      marginBottom: 14,
+      gap: 6
+    }
+  }, React.createElement("button", {
+    className: "btn chico" + (!filtro ? " primario" : ""),
+    onClick: () => setFiltro("")
+  }, "Todas (", enlaces.length, ")"), cats.map(c => React.createElement("button", {
+    key: c,
+    className: "btn chico" + (filtro === c ? " primario" : ""),
+    onClick: () => setFiltro(filtro === c ? "" : c)
+  }, c, " (", enlaces.filter(p => p.categoria === c).length, ")"))), grupos.length === 0 && React.createElement(Vacio, {
     icono: "\uD83D\uDD17",
-    titulo: "No hay enlaces"
-  }), grupos.map(c => React.createElement("div", {
-    className: "plan-grupo",
-    key: c
-  }, React.createElement("h3", null, c), lista.filter(p => p.categoria === c).map(p => React.createElement("div", {
-    className: "link-fila",
-    key: p.id
-  }, React.createElement("input", {
-    type: "checkbox",
-    checked: !!vistos[p.id],
-    onChange: () => marcar(p.id),
-    title: "Marcar como visto",
-    "aria-label": "Visto"
-  }), React.createElement("span", null, ICONO_PL[p.tipo]), React.createElement("a", {
-    href: p.url,
-    target: "_blank",
-    rel: "noopener",
-    style: vistos[p.id] ? {
-      opacity: .55
-    } : null
-  }, p.titulo), React.createElement("button", {
-    className: "icon-btn",
-    onClick: () => setEd(p),
-    "aria-label": "Editar"
-  }, "\u270F\uFE0F"), me.rol === "admin" && React.createElement("button", {
-    className: "icon-btn",
-    onClick: () => borrar(p),
-    "aria-label": "Quitar"
-  }, "\uD83D\uDDD1"))))), ed && React.createElement(PlantillaModal, {
+    titulo: "No hay enlaces",
+    texto: "Crea una categor\xEDa y agrega tus enlaces."
+  }), grupos.map(c => {
+    const items = visibles.filter(p => p.categoria === c),
+      cerrada = cerradas[c] && !nq;
+    return React.createElement("div", {
+      className: "plan-grupo",
+      key: c
+    }, React.createElement("div", {
+      className: "fila sb cat-cab"
+    }, React.createElement("div", {
+      className: "fila",
+      style: {
+        cursor: "pointer",
+        gap: 8
+      },
+      onClick: () => setCerradas({
+        ...cerradas,
+        [c]: !cerradas[c]
+      })
+    }, React.createElement("span", {
+      className: "muted"
+    }, cerrada ? "▶" : "▼"), React.createElement("h3", {
+      style: {
+        margin: 0
+      }
+    }, c), React.createElement(Chip, null, items.length)), React.createElement("div", {
+      className: "fila",
+      style: {
+        gap: 4
+      }
+    }, React.createElement("button", {
+      className: "btn chico",
+      onClick: () => setEd({
+        categoria: c
+      })
+    }, "\uFF0B Enlace"), React.createElement("button", {
+      className: "icon-btn",
+      title: "Renombrar categor\xEDa",
+      onClick: () => setCatModal({
+        nombre: c
+      })
+    }, "\u270F\uFE0F"), me.rol === "admin" && React.createElement("button", {
+      className: "icon-btn",
+      title: "Eliminar categor\xEDa",
+      onClick: () => borrarCategoria(c)
+    }, "\uD83D\uDDD1"))), !cerrada && (items.length ? items.map(p => React.createElement("div", {
+      className: "link-fila",
+      key: p.id
+    }, React.createElement("input", {
+      type: "checkbox",
+      checked: !!vistos[p.id],
+      onChange: () => marcar(p.id),
+      title: "Marcar como visto",
+      "aria-label": "Visto"
+    }), React.createElement("span", null, ICONO_PL[p.tipo]), React.createElement("a", {
+      href: p.url,
+      target: "_blank",
+      rel: "noopener",
+      style: vistos[p.id] ? {
+        opacity: .55
+      } : null
+    }, p.titulo), React.createElement("button", {
+      className: "icon-btn",
+      onClick: () => setEd(p),
+      "aria-label": "Editar"
+    }, "\u270F\uFE0F"), me.rol === "admin" && React.createElement("button", {
+      className: "icon-btn",
+      onClick: () => borrarEnlace(p),
+      "aria-label": "Quitar"
+    }, "\uD83D\uDDD1"))) : React.createElement("div", {
+      className: "muted sm",
+      style: {
+        padding: "6px 2px"
+      }
+    }, "Categor\xEDa vac\xEDa. Agrega el primer enlace con \xAB\uFF0B Enlace\xBB.")));
+  }), ed && React.createElement(PlantillaModal, {
     inicial: ed,
     cats: cats,
-    onGuardar: guardar,
+    onGuardar: guardarEnlace,
     onClose: () => setEd(null)
+  }), catModal && React.createElement(CategoriaModal, {
+    inicial: catModal.nombre || "",
+    onGuardar: guardarCategoria,
+    onClose: () => setCatModal(null)
   }));
+}
+function CategoriaModal({
+  inicial,
+  onGuardar,
+  onClose
+}) {
+  const [n, setN] = useState(inicial);
+  return React.createElement(Modal, {
+    titulo: inicial ? "Renombrar categoría" : "Nueva categoría",
+    onClose: onClose,
+    ancho: 440
+  }, React.createElement("form", {
+    className: "formu",
+    onSubmit: e => {
+      e.preventDefault();
+      onGuardar(n);
+    }
+  }, React.createElement(Campo, {
+    label: "Nombre de la categor\xEDa",
+    span: 2
+  }, React.createElement("input", {
+    value: n,
+    onChange: e => setN(e.target.value),
+    placeholder: "Ej: Speech y guiones",
+    autoFocus: true,
+    required: true
+  })), React.createElement("div", {
+    className: "fila"
+  }, React.createElement("button", {
+    className: "btn primario"
+  }, "Guardar"), React.createElement("button", {
+    type: "button",
+    className: "btn",
+    onClick: onClose
+  }, "Cancelar"))));
 }
 function PlantillaModal({
   inicial,
@@ -2673,6 +2873,7 @@ function PlantillaModal({
     url: inicial.url || "",
     tipo: inicial.tipo || "enlace"
   });
+  const [nueva, setNueva] = useState(!cats.length);
   const set = (k, v) => setF(x => ({
     ...x,
     [k]: v
@@ -2711,17 +2912,20 @@ function PlantillaModal({
     required: true
   })), React.createElement(Campo, {
     label: "Categor\xEDa"
-  }, React.createElement("input", {
-    list: "cats",
+  }, nueva ? React.createElement("input", {
     value: f.categoria,
     onChange: e => set("categoria", e.target.value),
+    placeholder: "Nombre de la nueva categor\xEDa",
     required: true
-  }), React.createElement("datalist", {
-    id: "cats"
+  }) : React.createElement("select", {
+    value: f.categoria,
+    onChange: e => e.target.value === "__nueva" ? (setNueva(true), set("categoria", "")) : set("categoria", e.target.value)
   }, cats.map(c => React.createElement("option", {
     key: c,
     value: c
-  })))), React.createElement(Campo, {
+  }, c)), React.createElement("option", {
+    value: "__nueva"
+  }, "\uFF0B Nueva categor\xEDa\u2026"))), React.createElement(Campo, {
     label: "Tipo"
   }, React.createElement("select", {
     value: f.tipo,
@@ -6394,10 +6598,16 @@ function Leyenda2() {
     }
   }), " Sin iniciar");
 }
+const MOMENTOS=[{id:"inicio",label:"Al iniciar el día"},{id:"medio",label:"Medio día"},{id:"tarde",label:"Media tarde"},{id:"durante",label:"Durante la jornada"},{id:"final",label:"Antes de cerrar el día"}],FRECUENCIAS=[{id:"diaria",label:"Todos los días (lunes a sábado)"},{id:"semanal",label:"Días de la semana"},{id:"mensual",label:"Días del mes"},{id:"esporadica",label:"Cuando se presente"},{id:"sin_fecha",label:"Sin fecha fija"}],MARCAS=[{id:"una",label:"Una vez"},{id:"empresa",label:"Por cada empresa a cargo"},{id:"empresa_dia",label:"Una empresa por día (rota)"},{id:"persona",label:"Por cada persona del equipo"}],DIAS_SEM=["Dom","Lun","Mar","Mié","Jue","Vie","Sáb"],MOTIVOS_NO=["La empresa canceló","Se reprogramó","No alcancé","Faltaron viáticos o transporte","Problema de conexión","Otro"];function wdDe(e){return new Date(e+"T12:00:00Z").getUTCDay()}function esUltimoDia(e){return"01"===sumarDias(e,1).slice(8)}function diaDelAnio(e){const a=new Date(e+"T12:00:00Z");return Math.floor((a-new Date(a.getUTCFullYear()+"-01-01T12:00:00Z"))/864e5)}function esOtraRutina(e){return"esporadica"===e.frecuencia||"sin_fecha"===e.frecuencia||"mensual"===e.frecuencia&&!(e.dias_mes||[]).length&&!e.ultimo_dia}function aplicaRutina(e,a){if(!e.activa)return!1;const t=wdDe(a),r=+a.slice(8);return"diaria"===e.frecuencia?t>=1&&t<=6:"semanal"===e.frecuencia?(e.dias_semana||[]).includes(t):"mensual"===e.frecuencia&&((e.dias_mes||[]).includes(r)||e.ultimo_dia&&esUltimoDia(a))}function frecuenciaTxt(e){return e.frecuencia_txt?e.frecuencia_txt:"semanal"===e.frecuencia?(e.dias_semana||[]).map(e=>DIAS_SEM[e]).join(", ")||"Semanal":"mensual"===e.frecuencia?[(e.dias_mes||[]).join(" y "),e.ultimo_dia?"último día":""].filter(Boolean).join(" y ")+" de cada mes":(byId(FRECUENCIAS,e.frecuencia)||{}).label||e.frecuencia}function primerNombre(e){return e?e.nombre.split(" ")[0]:"—"}function nombreCorto(e,a){if(!e)return"—";const t=e.nombre.split(" ");return a.filter(e=>e.nombre.split(" ")[0]===t[0]).length>1&&t[1]?t[0]+" "+t[1][0]+".":t[0]}function nombreItem(e,a){if("_"===e)return"";const t=byId(a.empresas,e);if(t)return t.nombre;const r=byId(a.lideres,e);return r?nombreCorto(r,a.lideres):"?"}function itemsDeRutina(e,a,t){const r=a.empresas_semana||[];return"persona"===e.marca?(e.personas||[]).length?e.personas:["_"]:"empresa"===e.marca?r.length?r:["_"]:"empresa_dia"===e.marca&&r.length?[r[diaDelAnio(t)%r.length]]:["_"]}function ultimaObs(e,a){const t=(e.observaciones||[]).filter(e=>!a||(e.texto||"").startsWith(a));return t.length?t[t.length-1].texto:""}function horaBog(e){return e?fmtParts(new Date(e),{hour:"numeric",minute:"2-digit"}):"—"}function duracion(e){if(null==e||e<0)return"—";const a=Math.round(e/6e4);return Math.floor(a/60)+" h "+a%60+" min"}function adminReporte(e){return e.find(e=>e.activo&&"admin"===e.rol&&!1===e.usa_mi_dia&&e.telefono)||null}function calcularDia(e,a,t){const r=byId(e.lideres,a);if(!r)return null;const n=e.jornadas_dia.find(e=>e.lider_id===a&&e.fecha===t)||null,l=e.rutinas.filter(e=>e.lider_id===a),c=e.rutina_marcas.filter(e=>e.lider_id===a&&e.fecha===t),s=e=>{const a=c.find(a=>a.rutina_id===e&&"#obs"===a.item);return a&&a.texto||""},i=l.filter(e=>aplicaRutina(e,t)).map(e=>{const a=itemsDeRutina(e,r,t),n=new Set(c.filter(a=>a.rutina_id===e.id&&"#obs"!==a.item).map(e=>e.item)),l=a.filter(e=>n.has(e)).length;return{r:e,items:a,hechos:n,n:l,total:a.length,completo:l===a.length,obs:s(e.id)}}).sort((e,a)=>e.r.orden-a.r.orden),o=l.filter(e=>e.activa&&esOtraRutina(e)).map(e=>({r:e,hecha:c.some(a=>a.rutina_id===e.id&&"_"===a.item)})),m=e=>(e.responsables||[]).includes(a),d=e.tareas.filter(e=>"tarea"!==e.tipo&&m(e)&&(e=>e.inicia_en?diaBog(e.inicia_en):e.fecha_limite)(e)===t).sort((e,a)=>(e.inicia_en||"z").localeCompare(a.inicia_en||"z")),u=e.tareas.filter(e=>"tarea"===e.tipo&&m(e)&&(!["listo","no_se_hace"].includes(e.estado)||diaBog(e.completada_en)===t||"no_se_hace"===e.estado&&diaBog(e.actualizado_en)===t)).sort((e,a)=>(e.fecha_limite||"9999").localeCompare(a.fecha_limite||"9999")),p=e.actividad.filter(e=>e.actor_id===a&&diaBog(e.ocurrio_en)===t),E=p.filter(e=>"jornada"!==e.entidad).length,R=p.filter(e=>"tarea"===e.entidad&&"editó"===e.accion&&e.detalle&&e.detalle.estado).length,h=n&&n.ingreso_en?p.filter(e=>"jornada"!==e.entidad&&e.ocurrio_en>=n.ingreso_en).map(e=>e.ocurrio_en).sort()[0]:null,g=i.filter(e=>e.completo).length,b=i.reduce((e,a)=>e+a.n/a.total,0),v=d.filter(e=>"listo"===e.estado).length,f=d.filter(e=>"no_se_hace"===e.estado).length,y=u.filter(e=>"listo"===e.estado&&diaBog(e.completada_en)===t).length,N=i.length+d.length,_=N?Math.round((b+v)/N*100):0,C=i.filter(e=>!e.completo).map(a=>({id:a.r.id,mision:a.r.mision,obs:a.obs,falta:"_"===a.items[0]?"No se hizo":("persona"===a.r.marca?"Sin verificar: ":"Faltó: ")+a.items.filter(e=>!a.hechos.has(e)).map(a=>nombreItem(a,e)).join(", ")})),x=n&&n.abierta_en?n.cerrada_en?"cerrado":"abierto":n&&n.ingreso_en?"entro":"no_entro";return{lider:r,jornada:n,hoy:i,otras:o,agenda:d,tareas:u,actividad:p,acciones:E,movidas:R,primera:h,recHechas:g,agHechas:v,agNo:f,tarHoy:y,pct:_,faltantes:C,estado:x}}function textoReporte(e,a,t){const r=[];return r.push("*Reporte del día · "+e.lider.nombre+"*"),r.push(fmtFecha(a)),r.push("Ingresó "+horaBog(e.jornada&&e.jornada.ingreso_en)+" · Abrió "+horaBog(e.jornada&&e.jornada.abierta_en)+" · Cerró "+horaBog(e.jornada&&e.jornada.cerrada_en||(new Date).toISOString())),r.push("Cumplimiento: "+e.pct+"%",""),r.push("Recurrentes completas: "+e.recHechas+"/"+e.hoy.length),e.faltantes.forEach(e=>r.push("  • "+e.mision+" — "+(e.falta.length>80?e.falta.slice(0,77)+"…":e.falta)+(e.obs?" ("+e.obs+")":""))),r.push("Agenda realizada: "+e.agHechas+"/"+e.agenda.length),e.agenda.filter(e=>"no_se_hace"===e.estado).forEach(e=>r.push("  ✗ "+e.titulo+" — "+(ultimaObs(e,"No se hizo")||"sin motivo"))),r.push("Tareas completadas hoy: "+e.tarHoy),e.tareas.filter(e=>"espera"===e.estado).forEach(e=>r.push("  ⏳ En espera: "+e.titulo+(ultimaObs(e)?" — "+ultimaObs(e):""))),r.push("Actividad en el dashboard: "+e.acciones+" acciones, "+e.movidas+" tareas movidas"),t&&r.push("","Comentario: "+t),r.join("\n")}async function anotarTarea(e,a,t){const r=[...e.observaciones||[],{por:a.id,nombre:a.nombre,at:(new Date).toISOString(),texto:t}];return sb.from("tareas").update({observaciones:r}).eq("id",e.id)}const ESTILO_CHIP_ITEM=e=>({minHeight:34,padding:"0 11px",borderRadius:99,fontSize:13,fontWeight:600,cursor:"pointer",border:"1px solid "+(e?"var(--pu)":"var(--bd)"),background:e?"var(--pu2)":"var(--card2)",color:e?"#fff":"var(--tx)"});function RutinaFila({x:e,d:a,data:t,me:r,iso:n,puede:l,marcar:c,marcarTodas:s,guardarObs:i}){const[o,m]=useState(!1),[d,u]=useState(e.obs);useEffect(()=>u(e.obs),[e.obs]);const p=e.r,E="_"===e.items[0],R=e.completo?"var(--ok)":e.n?"var(--info)":"var(--mut)";return React.createElement("div",{className:"md-rut"},React.createElement("div",{className:"fila",style:{alignItems:"flex-start",flexWrap:"nowrap"}},E&&React.createElement("input",{type:"checkbox",className:"md-check",checked:e.completo,disabled:!l,onChange:()=>c(p,"_"),"aria-label":p.mision}),React.createElement("div",{style:{flex:1,minWidth:0}},React.createElement("div",{style:{fontWeight:600,textDecoration:e.completo?"line-through":"none",color:e.completo?"var(--mut)":"var(--tx)"}},p.mision),React.createElement("div",{className:"xs muted"},frecuenciaTxt(p),"empresa_dia"!==p.marca||E?"":" · hoy: "+nombreItem(e.items[0],t),"persona"===p.marca?" · por persona del equipo":"")),React.createElement(Chip,{color:R.startsWith("var")?null:R},E?e.completo?"Hecha":"Pendiente":e.n+"/"+e.total),React.createElement("button",{type:"button",className:"md-link",onClick:()=>m(!o),"aria-expanded":o},o?"Ocultar":"Cómo se hace")),!E&&React.createElement("div",{className:"fila",style:{gap:6,marginTop:8}},e.items.map(a=>{const r=e.hechos.has(a);let s=nombreItem(a,t);if("persona"===p.marca){const e=calcularDia(t,a,n);e&&(s+=" · "+e.recHechas+"/"+e.hoy.length)}return React.createElement("button",{type:"button",key:a,disabled:!l,style:ESTILO_CHIP_ITEM(r),"aria-pressed":r,onClick:()=>c(p,a)},s,r?" ✓":"")}),e.items.length>1&&l&&React.createElement("button",{type:"button",className:"md-link",onClick:()=>s(p,e.items,!e.completo)},e.completo?"Quitar todas":"Marcar todas")),o&&React.createElement("div",{className:"md-know"},React.createElement("div",{className:"sm"},React.createElement("b",null,"Cómo se hace:")," ",p.know_how||"—"),l&&React.createElement("label",{className:"campo",style:{marginTop:8}},React.createElement("span",{className:"campo-l"},"Observación del día (opcional)"),React.createElement("input",{value:d,onChange:e=>u(e.target.value),onBlur:()=>d!==e.obs&&i(p,d),placeholder:"Ej: TTC no envió el reporte inicial, se lo pedí"}))))}function AgendaFila({t:e,data:a,me:t,puede:r,conMotivo:n,avisar:l}){const c=(ultimaObs(e,"No se hizo · ")||"").replace("No se hizo · ",""),[s,i]=useState(c.split(" — ")[0]||""),[o,m]=useState(c.split(" — ")[1]||""),d=byId(a.empresas,e.empresa_id),u=byId(TIPOS,e.tipo)||TIPOS[0],{recargar:p}=useApp();async function E(a){const{error:t}=await sb.from("tareas").update({estado:a}).eq("id",e.id);t?l("No se pudo guardar: "+t.message,"error"):p("tareas")}async function R(a,r){if(!a)return;const{error:n}=await anotarTarea(e,t,"No se hizo · "+a+(r?" — "+r:""));n?l("No se pudo guardar el motivo: "+n.message,"error"):p("tareas")}const h="listo"===e.estado,g="no_se_hace"===e.estado;return React.createElement("div",{className:"md-ag"},React.createElement("div",{className:"fila",style:{flexWrap:"wrap"}},React.createElement("div",{style:{minWidth:74,fontWeight:700}},e.inicia_en?horaBog(e.inicia_en):"Sin hora"),React.createElement("div",{style:{flex:"1 1 220px",minWidth:0}},React.createElement("div",{style:{fontWeight:600}},u.icon," ",e.titulo),React.createElement("div",{className:"xs muted"},u.label,d?" · "+d.nombre:"",e.lugar?" · "+e.lugar:"")),e.enlace&&React.createElement("a",{className:"btn",href:e.enlace,target:"_blank",rel:"noopener"},"Abrir enlace"),r&&React.createElement("div",{className:"fila",style:{gap:6}},React.createElement("button",{type:"button",className:"btn"+(h?" md-si":""),"aria-pressed":h,onClick:()=>E(h?"pendiente":"listo")},"Realizada"),React.createElement("button",{type:"button",className:"btn"+(g?" md-no":""),"aria-pressed":g,onClick:()=>E(g?"pendiente":"no_se_hace")},"No se hizo")),!r&&React.createElement(Chip,{color:h?"#4CAF7D":g?"#E06C6C":"#F2B84B"},h?"Realizada":g?"No se hizo":"Por confirmar")),g&&React.createElement("div",{className:"md-motivo"},r?React.createElement(React.Fragment,null,React.createElement("label",{className:"campo",style:{flex:"1 1 200px"}},React.createElement("span",{className:"campo-l"},"Motivo"),React.createElement("select",{value:s,onChange:e=>{i(e.target.value),R(e.target.value,o)}},React.createElement("option",{value:""},"Elige un motivo…"),MOTIVOS_NO.map(e=>React.createElement("option",{key:e,value:e},e)))),React.createElement("label",{className:"campo",style:{flex:"2 1 260px"}},React.createElement("span",{className:"campo-l"},"Detalle (opcional)"),React.createElement("input",{value:o,onChange:e=>m(e.target.value),onBlur:()=>s&&R(s,o),placeholder:"Ej: se pasa al jueves 10 a. m."}))):React.createElement("div",{className:"sm"},"Motivo: ",c||"sin motivo")))}function TareaDiaFila({t:e,data:a,me:t,puede:r,avisar:n}){const[l,c]=useState(""),s=byId(a.empresas,e.empresa_id),i=byId(ESTADOS,e.estado)||ESTADOS[0],o="espera"===e.estado||"no_se_hace"===e.estado,{recargar:m}=useApp();const d=ultimaObs(e);return React.createElement("div",{className:"md-tar"},React.createElement("div",{className:"fila",style:{flexWrap:"wrap"}},React.createElement("div",{style:{flex:"1 1 240px",minWidth:0}},React.createElement("div",{style:{fontWeight:600,textDecoration:["listo","no_se_hace"].includes(e.estado)?"line-through":"none"}},e.titulo),React.createElement("div",{className:"xs muted"},s?s.nombre:"Interna",e.fecha_limite?" · límite "+fmtFecha(e.fecha_limite):"",esVencida(e,hoyISO())?" · vencida":"",d?" · "+d:"")),React.createElement("select",{value:e.estado,disabled:!r,onChange:a=>async function(a){const{error:t}=await sb.from("tareas").update({estado:a}).eq("id",e.id);t?n("No se pudo cambiar el estado: "+t.message,"error"):m("tareas")}(a.target.value),"aria-label":"Estado",style:{width:150,flex:"none",color:i.color,fontWeight:600}},ESTADOS.map(e=>React.createElement("option",{key:e.id,value:e.id},e.label)))),o&&r&&!d&&React.createElement("div",{className:"fila",style:{marginTop:6,flexWrap:"nowrap"}},React.createElement("input",{value:l,onChange:e=>c(e.target.value),placeholder:"espera"===e.estado?"¿De quién o de qué estás esperando?":"¿Por qué no se hace?","aria-label":"Observación"}),React.createElement("button",{type:"button",className:"btn",onClick:async function(){if(!l.trim())return;const{error:a}=await anotarTarea(e,t,l.trim());a?n("No se pudo guardar la observación: "+a.message,"error"):(c(""),m("tareas"),n("Observación guardada ✓"))}},"Guardar")))}function ReporteDia({d:e,iso:a,comentario:t}){const{data:r}=useApp(),n=e.jornada||{};return React.createElement("div",{className:"card md-reporte"},React.createElement("div",{className:"fila sb",style:{alignItems:"flex-start"}},React.createElement("div",null,React.createElement("h3",{style:{marginBottom:2}},e.lider.nombre),React.createElement("div",{className:"xs muted"},fmtFecha(a)," · ",e.lider.cargo||"")),React.createElement("div",{className:"xs muted",style:{textAlign:"right"}},"Ingresó ",horaBog(n.ingreso_en)," · Abrió ",horaBog(n.abierta_en)," · Cerró ",n.cerrada_en?horaBog(n.cerrada_en):"pendiente",React.createElement("br",null),"Jornada: ",duracion(n.abierta_en?new Date(n.cerrada_en||Date.now())-new Date(n.abierta_en):null)," · De entrar a su primera acción: ",e.primera&&n.ingreso_en?duracion(new Date(e.primera)-new Date(n.ingreso_en)):"—")),React.createElement("div",{className:"grid gauto",style:{gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",margin:"12px 0"}},React.createElement("div",{className:"kpi",style:{"--c":"#A78BFA"}},React.createElement("div",{className:"v"},e.pct,"%"),React.createElement("div",{className:"l"},"Cumplimiento")),React.createElement("div",{className:"kpi",style:{"--c":"#4CAF7D"}},React.createElement("div",{className:"v"},e.recHechas,"/",e.hoy.length),React.createElement("div",{className:"l"},"Recurrentes completas")),React.createElement("div",{className:"kpi",style:{"--c":"#5B9BF5"}},React.createElement("div",{className:"v"},e.tarHoy),React.createElement("div",{className:"l"},"Tareas completadas hoy")),React.createElement("div",{className:"kpi",style:{"--c":e.agNo?"#E06C6C":"#43D9A8"}},React.createElement("div",{className:"v"},e.agHechas,"/",e.agenda.length),React.createElement("div",{className:"l"},"Agenda realizada")),React.createElement("div",{className:"kpi",style:{"--c":"#F2B84B"}},React.createElement("div",{className:"v"},e.acciones),React.createElement("div",{className:"l"},"Acciones · ",e.movidas," tareas movidas"))),React.createElement("h4",null,"Agenda"),e.agenda.length?e.agenda.map(e=>React.createElement("div",{key:e.id,className:"sm",style:{padding:"3px 0"}},React.createElement(Chip,{color:"listo"===e.estado?"#4CAF7D":"no_se_hace"===e.estado?"#E06C6C":"#F2B84B"},"listo"===e.estado?"Realizada":"no_se_hace"===e.estado?"No se hizo":"Por confirmar")," ",e.inicia_en?horaBog(e.inicia_en)+" · ":"",e.titulo,"no_se_hace"===e.estado&&React.createElement("span",{style:{color:"var(--err)"}}," · ",(ultimaObs(e,"No se hizo · ")||"sin motivo").replace("No se hizo · ","Motivo: ")))):React.createElement("p",{className:"sm muted"},"Sin agenda para este día."),React.createElement("h4",{style:{marginTop:12}},"Recurrentes incompletas"),e.faltantes.length?e.faltantes.map(e=>React.createElement("div",{key:e.id,className:"sm",style:{padding:"3px 0"}},React.createElement("b",null,e.mision)," ",React.createElement("span",{style:{color:"var(--err)"}},"· ",e.falta),e.obs?React.createElement("span",{className:"muted"}," — ",e.obs):null)):React.createElement("p",{className:"sm",style:{color:"var(--ok)"}},e.hoy.length?"Todas completas.":"No tiene recurrentes para este día."),React.createElement("h4",{style:{marginTop:12}},"Tareas"),e.tareas.length?e.tareas.map(e=>{const a=byId(ESTADOS,e.estado)||ESTADOS[0];return React.createElement("div",{key:e.id,className:"sm",style:{padding:"3px 0"}},React.createElement(Chip,{color:a.color},a.label)," ",e.titulo,ultimaObs(e)?React.createElement("span",{className:"muted"}," — ",ultimaObs(e)):null)}):React.createElement("p",{className:"sm muted"},"Sin tareas abiertas."),(t||n.comentario)&&React.createElement("p",{className:"sm",style:{marginTop:12}},React.createElement("b",null,"Comentario:")," ",t||n.comentario))}function MiDia(){const{data:e,me:a,avisar:t,ir:r,recargar:n}=useApp(),l=hoyISO(),[c,s]=useState("dia"),[i,o]=useState(""),[m,d]=useState({}),[u,p]=useState(""),[E,R]=useState(""),[h,g]=useState(""),[b,v]=useState(!1),f=calcularDia(e,a.id,l);if(!f)return React.createElement(Cargando,null);const y=f.jornada,N=!y||!y.abierta_en,_=y&&y.cerrada_en;async function C(e,a){await sb.rpc("registrar_evento",{p_entidad:"jornada",p_resumen:e,p_empresa:null,p_detalle:a||null})}async function x(r,c){const s=e.rutina_marcas.find(e=>e.rutina_id===r.id&&e.fecha===l&&e.item===c),i=nombreItem(c,e),o=s?await sb.from("rutina_marcas").delete().eq("id",s.id):await sb.from("rutina_marcas").insert({rutina_id:r.id,lider_id:a.id,fecha:l,item:c});if(o.error)return t("No se pudo marcar: "+o.error.message,"error");n("rutina_marcas"),sb.rpc("registrar_evento",{p_entidad:"rutina",p_resumen:(s?"desmarcó «":"cumplió «")+r.mision+"»"+(i?" · "+i:""),p_empresa:byId(e.empresas,c)?c:null,p_detalle:null})}async function S(e,r,c){const s=c?await sb.from("rutina_marcas").upsert(r.map(t=>({rutina_id:e.id,lider_id:a.id,fecha:l,item:t})),{onConflict:"rutina_id,fecha,item",ignoreDuplicates:!0}):await sb.from("rutina_marcas").delete().eq("rutina_id",e.id).eq("fecha",l).neq("item","#obs");if(s.error)return t("No se pudo marcar: "+s.error.message,"error");n("rutina_marcas"),sb.rpc("registrar_evento",{p_entidad:"rutina",p_resumen:(c?"cumplió «":"desmarcó «")+e.mision+"» en todas",p_empresa:null,p_detalle:null})}async function k(e,r){const c=await sb.from("rutina_marcas").upsert({rutina_id:e.id,lider_id:a.id,fecha:l,item:"#obs",texto:r},{onConflict:"rutina_id,fecha,item"});c.error?t("No se pudo guardar la observación: "+c.error.message,"error"):n("rutina_marcas")}const A=adminReporte(e.lideres),D=A?waLink(A.telefono,textoReporte(f,l,i.trim()||y&&y.comentario)):"https://wa.me/?text="+encodeURIComponent(textoReporte(f,l,i.trim())),w=(a.empresas_semana||[]).map(a=>byId(e.empresas,a)).filter(Boolean);if(!1===a.usa_mi_dia)return React.createElement(Vacio,{icono:"☀️",titulo:"Tu usuario no usa Mi día",texto:"Puedes ver el día de todo el equipo en Supervisión."},React.createElement("button",{type:"button",className:"btn primario",onClick:()=>r("supervision")},"Ir a Supervisión"));if(N)return React.createElement("div",{style:{maxWidth:820}},React.createElement("h1",{style:{fontSize:30}},(T=+fmtParts(new Date,{hour:"numeric",hour12:!1}))<12?"Buenos días":T<19?"Buenas tardes":"Buenas noches",", ",primerNombre(a)),React.createElement("p",{className:"muted"},fmtFecha(l)," · ",a.cargo||""),y&&y.ingreso_en&&React.createElement("div",{className:"aviso ok",style:{margin:"12px 0"}},"Ingreso registrado a las ",horaBog(y.ingreso_en)),React.createElement("div",{className:"card",style:{padding:22}},React.createElement("h2",null,"Abre tu día de trabajo"),React.createElement("p",{className:"muted sm"},"Al abrirlo empieza a contar tu jornada. Antes de cerrarlo confirmas tu agenda y se genera tu reporte para el administrador."),React.createElement("div",{className:"grid g3",style:{margin:"14px 0"}},React.createElement("div",{className:"kpi",style:{"--c":"#A78BFA"}},React.createElement("div",{className:"v"},f.hoy.length),React.createElement("div",{className:"l"},"Recurrentes de hoy")),React.createElement("div",{className:"kpi",style:{"--c":"#5B9BF5"}},React.createElement("div",{className:"v"},f.tareas.filter(e=>!["listo","no_se_hace"].includes(e.estado)).length),React.createElement("div",{className:"l"},"Tareas abiertas")),React.createElement("div",{className:"kpi",style:{"--c":"#43D9A8"}},React.createElement("div",{className:"v"},f.agenda.length),React.createElement("div",{className:"l"},"Visitas y conexiones hoy"))),React.createElement("button",{type:"button",className:"btn primario",disabled:b,onClick:async function(){v(!0);const e=(new Date).toISOString(),{error:r}=await sb.from("jornadas_dia").upsert({lider_id:a.id,fecha:l,abierta_en:e,ingreso_en:y&&y.ingreso_en||e},{onConflict:"lider_id,fecha"});if(v(!1),r)return t("No se pudo abrir el día: "+r.message,"error");n("jornadas_dia"),C("abrió su día de trabajo"),t("Día abierto ✓")},style:{minHeight:48,padding:"0 22px"}},"Abrir mi día de trabajo")));var T;if("cierre"===c&&!_)return React.createElement("div",{style:{maxWidth:900}},React.createElement("p",{className:"xs",style:{color:"var(--pu3)",fontWeight:700}},"Cerrar mi día · paso 1 de 2"),React.createElement("h1",null,"Antes de cerrar, confirma tu día"),React.createElement("p",{className:"muted sm"},"Lo que no se hizo también queda en el reporte, con su motivo."),React.createElement("div",{className:"card seccion"},React.createElement("h3",null,"¿Hiciste tu agenda de hoy?"),React.createElement("p",{className:"xs muted"},"Obligatorio: responde cada visita, conexión o clínica."),f.agenda.length?f.agenda.map(r=>React.createElement(AgendaFila,{key:r.id,t:r,data:e,me:a,puede:!0,conMotivo:!0,avisar:t})):React.createElement("p",{className:"sm muted"},"Hoy no tenías agenda.")),f.faltantes.length>0&&React.createElement("div",{className:"card seccion"},React.createElement("h3",null,"Recurrentes que quedaron incompletas"),React.createElement("p",{className:"xs muted"},"Si quieres, explica por qué en la observación de cada una (en Mi día → Cómo se hace)."),f.faltantes.map(e=>React.createElement("div",{key:e.id,className:"sm",style:{padding:"4px 0"}},React.createElement("b",null,e.mision)," ",React.createElement("span",{style:{color:"var(--err)"}},"· ",e.falta),e.obs?React.createElement("span",{className:"muted"}," — ",e.obs):null))),f.tareas.some(e=>["pendiente","en_progreso","espera"].includes(e.estado))&&React.createElement("div",{className:"card seccion"},React.createElement("h3",null,"Tareas sin terminar"),React.createElement("p",{className:"xs muted"},"¿Qué pasa con ellas en el Panel de tareas?"),f.tareas.filter(e=>["pendiente","en_progreso","espera"].includes(e.estado)).map(e=>React.createElement("div",{key:e.id,className:"fila sb",style:{padding:"6px 0",borderBottom:"1px solid var(--bd)"}},React.createElement("span",{className:"sm"},React.createElement("b",null,e.titulo)," ",React.createElement("span",{className:"muted"},"· ",(byId(ESTADOS,e.estado)||{}).label)),React.createElement("select",{value:m[e.id]||"manana",onChange:a=>d({...m,[e.id]:a.target.value}),style:{width:210,flex:"none"},"aria-label":"Qué pasa con esta tarea"},React.createElement("option",{value:"manana"},"Pasa a mañana"),React.createElement("option",{value:"sigue"},"Sigue con su fecha"))))),React.createElement("label",{className:"campo seccion"},React.createElement("span",{className:"campo-l"},"Comentario del día (opcional)"),React.createElement("textarea",{value:i,onChange:e=>o(e.target.value),rows:3,placeholder:"Algo que el administrador deba saber…"})),u&&React.createElement("div",{className:"aviso error",role:"alert",style:{marginTop:12}},u),React.createElement("div",{className:"fila",style:{marginTop:14}},React.createElement("button",{type:"button",className:"btn primario",onClick:function(){const e=f.agenda.filter(e=>!["listo","no_se_hace"].includes(e.estado)).length,a=f.agenda.filter(e=>"no_se_hace"===e.estado&&!ultimaObs(e,"No se hizo · ")).length;return e?p("Falta confirmar "+e+" visita(s) o conexión(es) de tu agenda."):a?p("Elige el motivo de lo que no se hizo."):(p(""),void s("reporte"))}},"Ver mi reporte"),React.createElement("button",{type:"button",className:"btn",onClick:()=>{s("dia"),p("")}},"Volver a mi día")));if("reporte"===c&&!_||_)return React.createElement("div",{style:{maxWidth:900}},_?React.createElement("div",{className:"aviso ok",style:{marginBottom:14}},"Día cerrado a las ",horaBog(y.cerrada_en)," · tu reporte ya está en Supervisión."):React.createElement(React.Fragment,null,React.createElement("p",{className:"xs",style:{color:"var(--pu3)",fontWeight:700}},"Cerrar mi día · paso 2 de 2"),React.createElement("h1",null,"Tu reporte del día"),React.createElement("p",{className:"muted sm"},"Revísalo. Al cerrar queda en Supervisión y se lo envías al administrador por WhatsApp.")),React.createElement(ReporteDia,{d:f,iso:l,comentario:i.trim()}),React.createElement("div",{className:"fila",style:{marginTop:14}},!_&&React.createElement("button",{type:"button",className:"btn primario",disabled:b,onClick:async function(){v(!0);const e=6===wdDe(l)?sumarDias(l,2):sumarDias(l,1),a=f.tareas.filter(e=>["pendiente","en_progreso","espera"].includes(e.estado)&&"manana"===(m[e.id]||"manana")&&(!e.fecha_limite||e.fecha_limite<=l));for(const t of a)await sb.from("tareas").update({fecha_limite:e}).eq("id",t.id);const r={pct:f.pct,recurrentes:{hechas:f.recHechas,total:f.hoy.length},faltantes:f.faltantes,agenda:f.agenda.map(e=>({id:e.id,titulo:e.titulo,estado:e.estado,motivo:ultimaObs(e,"No se hizo · ")})),tareas:f.tareas.map(e=>({id:e.id,titulo:e.titulo,estado:e.estado})),tareas_hoy:f.tarHoy,acciones:f.acciones,movidas:f.movidas,pasadas_a_manana:a.length},{error:c}=await sb.from("jornadas_dia").update({cerrada_en:(new Date).toISOString(),comentario:i.trim()||null,reporte:r}).eq("id",y.id);if(v(!1),c)return t("No se pudo cerrar el día: "+c.message,"error");n("jornadas_dia"),n("tareas"),C("cerró su día · cumplimiento "+f.pct+"%",r),s("dia"),t("Día cerrado ✓ Tu reporte ya está en Supervisión")}},"Cerrar mi día"),!_&&React.createElement("button",{type:"button",className:"btn",onClick:()=>s("cierre")},"Corregir algo"),React.createElement("a",{className:"btn verde",href:D,target:"_blank",rel:"noopener"},"Enviar reporte ",A?"a "+primerNombre(A):""," por WhatsApp"),_&&React.createElement("button",{type:"button",className:"btn",onClick:async()=>{const{error:e}=await sb.from("jornadas_dia").update({cerrada_en:null}).eq("id",y.id);e?t(e.message,"error"):(n("jornadas_dia"),C("reabrió su día"))}},"Reabrir mi día")));const B=MOMENTOS.map(e=>({...e,recs:f.hoy.filter(a=>a.r.momento===e.id)})).filter(e=>e.recs.length);return React.createElement("div",null,React.createElement("div",{className:"pag-cab"},React.createElement("div",null,React.createElement("h1",null,"☀️ Mi día · ",a.nombre),React.createElement("p",null,fmtFecha(l)," · Día abierto desde las ",horaBog(y.abierta_en))),React.createElement("button",{type:"button",className:"btn primario",onClick:()=>s("cierre")},"Cerrar mi día")),React.createElement("div",{className:"card",style:{marginBottom:14}},React.createElement("div",{className:"fila sb sm",style:{marginBottom:8}},React.createElement("b",null,"Avance del día"),React.createElement("span",{className:"muted"},"Recurrentes ",f.recHechas,"/",f.hoy.length," · Tareas completadas hoy ",f.tarHoy," · Agenda ",f.agHechas,"/",f.agenda.length," · ",f.pct,"%")),React.createElement(Barra,{pct:f.pct})),React.createElement("div",{className:"md-cols"},React.createElement("div",{className:"md-izq"},React.createElement("section",{className:"card"},React.createElement("div",{className:"fila sb"},React.createElement("h3",{style:{margin:0}},"🔁 Mis recurrentes de hoy"),React.createElement("button",{type:"button",className:"md-link",onClick:()=>r("rutinas")},"Ver todas mis rutinas")),React.createElement("p",{className:"xs muted"},"Mis empresas esta semana: ",w.length?w.map(e=>e.nombre).join(", "):"ninguna asignada (se definen en Rutinas)"),!B.length&&React.createElement("p",{className:"sm muted"},"No tienes recurrentes para hoy. ",e.rutinas.some(e=>e.lider_id===a.id)?"":"Todavía no hay rutinas cargadas para ti: agrégalas en Rutinas."),B.map(t=>React.createElement("div",{key:t.id,style:{marginTop:12}},React.createElement("div",{className:"md-mom"},t.label," · ",t.recs.filter(e=>e.completo).length,"/",t.recs.length),t.recs.map(t=>React.createElement(RutinaFila,{key:t.r.id,x:t,d:f,data:e,me:a,iso:l,puede:!0,marcar:x,marcarTodas:S,guardarObs:k})))),f.otras.length>0&&React.createElement("details",{style:{marginTop:14}},React.createElement("summary",{className:"sm",style:{cursor:"pointer",fontWeight:600}},"Otras funciones (mensuales, cuando se presenten o sin fecha) · ",f.otras.length),f.otras.map(e=>React.createElement("div",{key:e.r.id,className:"fila sb",style:{padding:"6px 0",borderBottom:"1px solid var(--bd)"}},React.createElement("div",null,React.createElement("div",{className:"sm",style:{fontWeight:600}},e.r.mision),React.createElement("div",{className:"xs muted"},frecuenciaTxt(e.r))),React.createElement("button",{type:"button",className:"btn",onClick:()=>x(e.r,"_")},e.hecha?"Hecha hoy ✓":"Registrar que la hice hoy"))))),React.createElement("section",{className:"card seccion"},React.createElement("div",{className:"fila sb"},React.createElement("h3",{style:{margin:0}},"✅ Mis tareas"),React.createElement("button",{type:"button",className:"md-link",onClick:()=>r("tareas")},"Abrir Panel de tareas")),React.createElement("p",{className:"xs muted"},"Son las mismas del Panel de tareas: lo que cambies aquí se ve allá."),f.tareas.length?f.tareas.map(r=>React.createElement(TareaDiaFila,{key:r.id,t:r,data:e,me:a,puede:!0,avisar:t})):React.createElement("p",{className:"sm muted"},"No tienes tareas abiertas."),React.createElement("form",{onSubmit:async function(e){if(e.preventDefault(),!E.trim())return;const{error:r}=await sb.from("tareas").insert({titulo:E.trim(),empresa_id:h||null,responsables:[a.id],fecha_limite:l,tipo:"tarea",origen:"tablero",prioridad:"media",estado:"pendiente"});if(r)return t("No se pudo crear: "+r.message,"error");R(""),n("tareas"),t("Tarea creada en el Panel de tareas ✓")},className:"fila",style:{marginTop:10,flexWrap:"wrap"}},React.createElement("input",{value:E,onChange:e=>R(e.target.value),placeholder:"Nueva tarea para hoy…","aria-label":"Nueva tarea",style:{flex:"2 1 240px",width:"auto"}}),React.createElement("select",{value:h,onChange:e=>g(e.target.value),"aria-label":"Empresa",style:{flex:"1 1 160px",width:"auto"}},React.createElement("option",{value:""},"Interna (Genelypse)"),e.empresas.filter(e=>!e.archivada).map(e=>React.createElement("option",{key:e.id,value:e.id},e.nombre))),React.createElement("button",{type:"submit",className:"btn"},"Agregar"))),React.createElement("section",{className:"card seccion"},React.createElement("div",{className:"fila sb"},React.createElement("h3",{style:{margin:0}},"📅 Mi agenda de hoy"),React.createElement("button",{type:"button",className:"md-link",onClick:()=>r("calendario")},"Abrir Calendario")),React.createElement("p",{className:"xs muted"},"Visitas, conexiones y clínicas del Calendario."),f.agenda.length?f.agenda.map(r=>React.createElement(AgendaFila,{key:r.id,t:r,data:e,me:a,puede:!0,avisar:t})):React.createElement("p",{className:"sm muted"},"No tienes visitas ni conexiones para hoy."))),React.createElement("aside",{className:"card md-der"},React.createElement("h3",null,"Lo que se está midiendo"),React.createElement("p",{className:"xs muted"},"Esto lo ve el administrador en Supervisión."),React.createElement("div",{className:"grid g2",style:{margin:"10px 0"}},React.createElement("div",{className:"kpi",style:{"--c":"#A78BFA"}},React.createElement("div",{className:"v"},f.acciones),React.createElement("div",{className:"l"},"Acciones hoy")),React.createElement("div",{className:"kpi",style:{"--c":"#5B9BF5"}},React.createElement("div",{className:"v"},f.movidas),React.createElement("div",{className:"l"},"Tareas movidas"))),React.createElement("div",{className:"lista",style:{maxHeight:560,overflowY:"auto"}},f.actividad.slice(0,60).map(e=>React.createElement("div",{key:e.id,className:"xs"},React.createElement("span",{className:"muted"},horaBog(e.ocurrio_en))," · ",e.resumen.replace(a.nombre+" ",""))),y.ingreso_en&&React.createElement("div",{className:"xs"},React.createElement("span",{className:"muted"},horaBog(y.ingreso_en))," · Inició sesión")))))}function Supervision(){const{data:e,me:a}=useApp(),[t,r]=useState(hoyISO()),n=e.lideres.filter(e=>e.activo&&!1!==e.usa_mi_dia).map(a=>calcularDia(e,a.id,t)).filter(Boolean),[l,c]=useState(n[0]?n[0].lider.id:null),s=n.find(e=>e.lider.id===l)||n[0],i={no_entro:["No ingresó","#E06C6C"],entro:["Entró · sin abrir día","#F2B84B"],abierto:["Día abierto","#5B9BF5"],cerrado:["Día cerrado","#4CAF7D"]},o=n.reduce((e,a)=>e+a.hoy.length,0),m=n.reduce((e,a)=>e+a.recHechas,0),d=n.length,u=[{v:n.filter(e=>"no_entro"!==e.estado).length+"/"+d,l:"Iniciaron sesión",c:"#A78BFA"},{v:n.filter(e=>["abierto","cerrado"].includes(e.estado)).length+"/"+d,l:"Abrieron su día",c:"#5B9BF5"},{v:n.filter(e=>"cerrado"===e.estado).length+"/"+d,l:"Cerraron su día",c:"#4CAF7D"},{v:(o?Math.round(m/o*100):0)+"%",l:"Recurrentes cumplidas",c:"#43D9A8"},{v:n.reduce((e,a)=>e+a.agNo,0),l:"Agendas no realizadas",c:"#E06C6C"}];return React.createElement("div",null,React.createElement("div",{className:"pag-cab"},React.createElement("div",null,React.createElement("h1",null,"🛰 Supervisión del equipo"),React.createElement("p",null,"Quién entró, quién abrió y cerró su día, y qué no se cumplió.")),React.createElement("label",{className:"fila sm",style:{flexWrap:"nowrap"}},"Día ",React.createElement("input",{type:"date",value:t,max:hoyISO(),onChange:e=>e.target.value&&r(e.target.value),style:{width:170}}))),React.createElement("div",{className:"grid",style:{gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))"}},u.map(e=>React.createElement("div",{key:e.l,className:"kpi",style:{"--c":e.c}},React.createElement("div",{className:"v"},e.v),React.createElement("div",{className:"l"},e.l)))),React.createElement("div",{className:"card seccion tabla-wrap"},React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,React.createElement("th",null,"Persona"),React.createElement("th",null,"Estado"),React.createElement("th",null,"Ingresó"),React.createElement("th",null,"Abrió"),React.createElement("th",null,"Cerró"),React.createElement("th",null,"Recurrentes"),React.createElement("th",null,"Tareas hoy"),React.createElement("th",null,"Agenda"),React.createElement("th",null,"Acciones"),React.createElement("th",null,"%"),React.createElement("th",null))),React.createElement("tbody",null,n.map(e=>{const a=i[e.estado],t=e.jornada||{};return React.createElement("tr",{key:e.lider.id,style:e.lider.id===(s&&s.lider.id)?{background:"rgba(139,92,246,.10)"}:null},React.createElement("td",null,React.createElement("b",null,e.lider.nombre),React.createElement("div",{className:"xs muted"},e.lider.cargo||"")),React.createElement("td",null,React.createElement(Chip,{color:a[1]},a[0])),React.createElement("td",null,horaBog(t.ingreso_en)),React.createElement("td",null,horaBog(t.abierta_en)),React.createElement("td",null,horaBog(t.cerrada_en)),React.createElement("td",null,e.recHechas,"/",e.hoy.length),React.createElement("td",null,e.tarHoy),React.createElement("td",{style:e.agNo?{color:"var(--err)",fontWeight:700}:null},e.agHechas,"/",e.agenda.length),React.createElement("td",null,e.acciones),React.createElement("td",null,"no_entro"===e.estado?"—":e.pct+"%"),React.createElement("td",null,React.createElement("button",{type:"button",className:"btn",onClick:()=>c(e.lider.id)},"Ver")))}),!n.length&&React.createElement("tr",null,React.createElement("td",{colSpan:"11",className:"muted"},"No hay personas con Mi día."))))),s&&React.createElement("div",{className:"seccion"},React.createElement(ReporteDia,{d:s,iso:t}),React.createElement("div",{className:"fila",style:{marginTop:10}},s.lider.telefono&&React.createElement("a",{className:"btn verde",target:"_blank",rel:"noopener",href:waLink(s.lider.telefono,"cerrado"===s.estado?"Hola "+primerNombre(s.lider)+", revisé tu reporte del día en el dashboard de Genelypse.":"Hola "+primerNombre(s.lider)+", aún no tengo tu "+("abierto"===s.estado?"cierre":"apertura")+" de día en el dashboard de Genelypse. ¿Lo haces por favor? "+APP_URL)},"cerrado"===s.estado?"Escribirle por WhatsApp":"Recordarle por WhatsApp"))))}function RutinaForm({inicial:e,liderId:a,onGuardar:t,onCancelar:r,onBorrar:n}){const{data:l}=useApp(),[c,s]=useState(()=>({mision:"",know_how:"",frecuencia:"diaria",dias_semana:[],dias_mes:[],ultimo_dia:!1,frecuencia_txt:"",momento:"durante",marca:"una",personas:[],activa:!0,...e||{}})),[i,o]=useState((c.dias_mes||[]).join(", ")),[m,d]=useState(!1),u=(e,a)=>s(t=>({...t,[e]:a}));return React.createElement("form",{onSubmit:async function(e){e.preventDefault();const r=i.split(/[^0-9]+/).map(Number).filter(e=>e>=1&&e<=31);d(!0),await t({lider_id:a,mision:c.mision.trim(),know_how:c.know_how.trim(),frecuencia:c.frecuencia,dias_semana:"semanal"===c.frecuencia?c.dias_semana:[],dias_mes:"mensual"===c.frecuencia?r:[],ultimo_dia:"mensual"===c.frecuencia&&c.ultimo_dia,frecuencia_txt:c.frecuencia_txt.trim()||null,momento:c.momento,marca:c.marca,personas:"persona"===c.marca?c.personas:[],activa:c.activa}),d(!1)},className:"grid formu",style:{gridTemplateColumns:"repeat(2,minmax(0,1fr))"}},React.createElement(Campo,{label:"Misión",span:2},React.createElement("input",{required:!0,value:c.mision,onChange:e=>u("mision",e.target.value)})),React.createElement(Campo,{label:"Cómo se hace (Know How)",span:2},React.createElement("textarea",{value:c.know_how,onChange:e=>u("know_how",e.target.value),rows:3})),React.createElement(Campo,{label:"Frecuencia"},React.createElement("select",{value:c.frecuencia,onChange:e=>u("frecuencia",e.target.value)},FRECUENCIAS.map(e=>React.createElement("option",{key:e.id,value:e.id},e.label)))),React.createElement(Campo,{label:"Momento del día"},React.createElement("select",{value:c.momento,onChange:e=>u("momento",e.target.value)},MOMENTOS.map(e=>React.createElement("option",{key:e.id,value:e.id},e.label)))),"semanal"===c.frecuencia&&React.createElement(Campo,{label:"¿Qué días?",span:2},React.createElement("div",{className:"fila",style:{gap:6}},[1,2,3,4,5,6].map(e=>{const a=c.dias_semana.includes(e);return React.createElement("button",{type:"button",key:e,style:ESTILO_CHIP_ITEM(a),"aria-pressed":a,onClick:()=>u("dias_semana",a?c.dias_semana.filter(a=>a!==e):[...c.dias_semana,e].sort())},DIAS_SEM[e])}))),"mensual"===c.frecuencia&&React.createElement(React.Fragment,null,React.createElement(Campo,{label:"Días del mes",ayuda:"Ej: 1  ·  12, 28  ·  15, 30"},React.createElement("input",{value:i,onChange:e=>o(e.target.value)})),React.createElement(Campo,{label:"Último día del mes"},React.createElement("label",{className:"fila sm",style:{minHeight:42}},React.createElement("input",{type:"checkbox",checked:c.ultimo_dia,onChange:e=>u("ultimo_dia",e.target.checked)})," También el último día"))),React.createElement(Campo,{label:"Se marca"},React.createElement("select",{value:c.marca,onChange:e=>u("marca",e.target.value)},MARCAS.map(e=>React.createElement("option",{key:e.id,value:e.id},e.label)))),React.createElement(Campo,{label:"Cómo aparece en el Excel (opcional)"},React.createElement("input",{value:c.frecuencia_txt||"",onChange:e=>u("frecuencia_txt",e.target.value),placeholder:"Ej: Empresa por día"})),"persona"===c.marca&&React.createElement(Campo,{label:"Personas que verifica",span:2},React.createElement(SelectLideres,{lideres:l.lideres.filter(e=>e.id!==a),value:c.personas,onChange:e=>u("personas",e),multiple:!0})),React.createElement(Campo,{label:"Activa",span:2},React.createElement("label",{className:"fila sm"},React.createElement("input",{type:"checkbox",checked:c.activa,onChange:e=>u("activa",e.target.checked)})," Aparece en Mi día")),React.createElement("div",{className:"fila"},React.createElement("button",{type:"submit",className:"btn primario",disabled:m},e?"Guardar cambios":"Crear rutina"),React.createElement("button",{type:"button",className:"btn",onClick:r},"Cancelar"),n&&React.createElement("button",{type:"button",className:"btn peligro",onClick:n},"Eliminar")))}function Rutinas(){const{data:e,me:a,avisar:t,recargar:r}=useApp(),n=e.lideres.filter(e=>e.activo&&!1!==e.usa_mi_dia),[l,c]=useState(!1!==a.usa_mi_dia?a.id:(n[0]||{}).id),[s,i]=useState("todas"),[o,m]=useState(null),[d,u]=useState(!1),p=byId(e.lideres,l),E="admin"===a.rol||a.id===l,R=e=>"diaria"===e.frecuencia?"diarias":"semanal"===e.frecuencia?"semanales":"mensual"!==e.frecuencia||esOtraRutina(e)?"otras":"mensuales",h=e.rutinas.filter(e=>e.lider_id===l).sort((e,a)=>e.orden-a.orden),g=h.filter(e=>"todas"===s||R(e)===s),b=(p&&p.empresas_semana||[]).map(a=>byId(e.empresas,a)).filter(Boolean);const v={diarias:"#A78BFA",semanales:"#5B9BF5",mensuales:"#4CAF7D",otras:"#9B9B9F"};return React.createElement("div",null,React.createElement("div",{className:"pag-cab"},React.createElement("div",null,React.createElement("h1",null,"🔁 Rutinas"),React.createElement("p",null,"Las funciones recurrentes de cada persona. El administrador edita las de todos; cada persona, las suyas.")),E&&p&&React.createElement("button",{type:"button",className:"btn primario",onClick:()=>m({})},"+ Nueva rutina")),React.createElement("div",{className:"filtros"},React.createElement("select",{value:l||"",onChange:e=>c(e.target.value),"aria-label":"Persona"},n.map(e=>React.createElement("option",{key:e.id,value:e.id},e.nombre))),React.createElement("select",{value:s,onChange:e=>i(e.target.value),"aria-label":"Frecuencia"},React.createElement("option",{value:"todas"},"Todas las frecuencias"),React.createElement("option",{value:"diarias"},"Diarias"),React.createElement("option",{value:"semanales"},"Semanales"),React.createElement("option",{value:"mensuales"},"Del mes"),React.createElement("option",{value:"otras"},"Cuando se presente o sin fecha"))),React.createElement("div",{className:"card seccion"},React.createElement("div",{className:"fila sb"},React.createElement("h3",{style:{margin:0}},"🏢 Empresas a cargo esta semana"),E&&React.createElement("button",{type:"button",className:"md-link",onClick:()=>u(!d)},d?"Listo":"Cambiar")),React.createElement("p",{className:"xs muted"},"Las rutinas “por empresa” se marcan con estas empresas."),d?React.createElement("div",{className:"fila",style:{gap:6}},e.empresas.filter(e=>!e.archivada).map(e=>{const a=(p.empresas_semana||[]).includes(e.id);return React.createElement("button",{type:"button",key:e.id,style:ESTILO_CHIP_ITEM(a),"aria-pressed":a,onClick:()=>async function(e){const{error:a}=await sb.from("lideres").update({empresas_semana:e}).eq("id",l);a?t("No se pudo guardar: "+a.message,"error"):r("lideres")}(a?p.empresas_semana.filter(a=>a!==e.id):[...p.empresas_semana||[],e.id])},e.nombre)})):React.createElement("div",{className:"fila",style:{gap:6}},b.length?b.map(e=>React.createElement(Chip,{key:e.id},e.nombre)):React.createElement("span",{className:"sm muted"},"Ninguna."))),React.createElement("div",{className:"card seccion tabla-wrap"},g.length?React.createElement("table",null,React.createElement("thead",null,React.createElement("tr",null,React.createElement("th",null,"Misión"),React.createElement("th",null,"Frecuencia"),React.createElement("th",null,"Momento"),React.createElement("th",null,"Se marca"),React.createElement("th",null,"Cómo se hace"),E&&React.createElement("th",null))),React.createElement("tbody",null,g.map(e=>React.createElement("tr",{key:e.id,style:e.activa?null:{opacity:.5}},React.createElement("td",null,React.createElement("b",null,e.mision),!e.activa&&React.createElement("div",{className:"xs muted"},"Inactiva")),React.createElement("td",null,React.createElement(Chip,{color:v[R(e)]},frecuenciaTxt(e))),React.createElement("td",{className:"sm"},(byId(MOMENTOS,e.momento)||{}).label),React.createElement("td",{className:"sm"},(byId(MARCAS,e.marca)||{}).label),React.createElement("td",{className:"xs muted",style:{maxWidth:420}},e.know_how),E&&React.createElement("td",null,React.createElement("button",{type:"button",className:"btn",onClick:()=>m(e)},"Editar")))))):React.createElement(Vacio,{icono:"🔁",titulo:"Sin rutinas",texto:h.length?"No hay rutinas con ese filtro.":"Esta persona todavía no tiene rutinas cargadas."})),o&&React.createElement(Modal,{titulo:o.id?"Editar rutina":"Nueva rutina · "+(p?p.nombre:""),onClose:()=>m(null),ancho:720},React.createElement(RutinaForm,{inicial:o.id?o:null,liderId:l,onGuardar:async function(e){const a=o.id?await sb.from("rutinas").update(e).eq("id",o.id):await sb.from("rutinas").insert({...e,orden:h.length+1});if(a.error)return t("No se pudo guardar: "+a.error.message,"error");m(null),r("rutinas"),t("Rutina guardada ✓")},onCancelar:()=>m(null),onBorrar:o.id?async function(){if(!confirm("¿Eliminar esta rutina? Se borra también su historial de marcas."))return;const{error:e}=await sb.from("rutinas").delete().eq("id",o.id);if(e)return t("No se pudo eliminar: "+e.message,"error");m(null),r("rutinas"),t("Rutina eliminada")}:null})))}
+
 const TABS = [{
   id: "inicio",
   label: "🏠 Inicio",
   C: Inicio
+}, {
+  id: "midia",
+  label: "☀️ Mi día",
+  C: MiDia
 }, {
   id: "tareas",
   label: "✅ Tareas",
@@ -6438,6 +6648,15 @@ const TABS = [{
   id: "plantillas",
   label: "🔗 Plantillas",
   C: Plantillas
+}, {
+  id: "rutinas",
+  label: "🔁 Rutinas",
+  C: Rutinas
+}, {
+  id: "supervision",
+  label: "🛰 Supervisión",
+  C: Supervision,
+  admin: true
 }, {
   id: "lideres",
   label: "👤 Líderes",
@@ -6492,6 +6711,17 @@ function App() {
       sb.auth.signOut();
     }
   }, [session, cargado, me]);
+  const ingresoListo = useRef(false);
+  useEffect(() => {
+    if (!session || !me || !me.activo || ingresoListo.current) return;
+    ingresoListo.current = true;
+    sb.rpc("registrar_ingreso").then(() => recargar("jornadas_dia"));
+    if (me.usa_mi_dia !== false) setVista(v => v.n === 0 ? {
+      tab: "midia",
+      params: null,
+      n: 1
+    } : v);
+  }, [session, me && me.id]);
   if (session === undefined) return React.createElement(Cargando, null);
   if (!session) return React.createElement(Login, {
     aviso: aviso
