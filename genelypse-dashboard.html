@@ -6774,7 +6774,7 @@ function App() {
       recargar("lideres");
     }
   });
-  const tabs = TABS.filter(t => !t.admin || me.rol === "admin");
+  const tabs = TABS.filter(t => (!t.admin || me.rol === "admin") && (me.linea !== "sublinea" || ["midia", "tareas", "empresas", "calendario"].includes(t.id)));
   const act = tabs.find(t => t.id === vista.tab) || tabs[0];
   const C = act.C;
   const ctx = {
